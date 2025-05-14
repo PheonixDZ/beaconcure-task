@@ -1,0 +1,20 @@
+name: Image processing
+on:
+  pull_request:
+    branches:
+      - staging
+  push:
+    branches:
+      - staging
+jobs:
+  call-cicd:
+    uses: ./.github/workflows/cicd.yaml
+    with:
+      ecr_repository: "image-processing-app-ecr-staging"
+      helm_chart_dir: "helm/image-processing"
+      aws_region: "us-west-1"
+      image_name: "image-processing-app-staging"
+      chart_tag_key: "tag"
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID_STAGING }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGING }}

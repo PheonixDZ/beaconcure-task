@@ -1,0 +1,147 @@
+name: CI/CD Pipeline # Triggered by image-processing.yaml
+on:
+  workflow_call:
+    inputs: # Passed from image-processing.yaml workflow
+      ecr_repository:
+        description: 'Name of the ECR repository (e.g., myapp).' # Repository name in AWS ECR
+        required: true
+        type: string
+      helm_chart_dir:
+        description: 'Path to the helm chart directory (relative to repo root).' # Directory for Helm chart
+        required: true
+        type: string
+      aws_region:
+        description: 'AWS region for ECR and credentials.' # AWS region for deployment
+        required: false
+        type: string
+        default: 'us-west-1'
+      image_name:
+        description: 'Name for the Docker image (used for local build).' # Local Docker image name
+        required: false
+        type: string
+        default: 'myapp'
+      chart_tag_key:
+        description: 'Key in values.yaml to update the image tag (e.g., "tag").' # Key for image tag in Helm values
+        required: false
+        type: string
+        default: 'tag'
+    secrets: # Sensitive credentials
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest # Use the latest Ubuntu runner
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    environment: production # Set environment for job
+    defaults:
+      run:
+        working-directory: . # Set working directory to repo root
+    steps:
+
+      - name: Checkout Code # Fetch repository code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js # Set up Node.js environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: '16' # Use Node.js version 16
+
+      - name: Install Dependencies # Install project dependencies using npm
+        uses: chill-viking/npm-ci@latest
+
+      # - name: Run Linting # Lint JavaScript/TypeScript code
+      #   run: npm run lint
+
+      - name: Install Trivy # Install security scanner for containers
+        run: |
+          sudo apt-get update && sudo apt-get install -y wget
+          wget https://github.com/aquasecurity/trivy/releases/download/v0.39.0/trivy_0.39.0_Linux-64bit.deb
+          sudo dpkg -i trivy_0.39.0_Linux-64bit.deb
+
+      - name: Set Image Tag # Generate image tag using GitHub SHA
+        id: set_tag
+        run: echo "IMAGE_TAG=${GITHUB_SHA:0:7}" >> $GITHUB_ENV && echo "Done imagetag"
+
+      - name: Set up Docker Buildx with Containerd driver # Enable advanced Docker build features using default Docker driver
+        run: |
+          export DOCKER_BUILDKIT=1  # Enable Docker BuildKit for advanced build capabilities
+          docker buildx create --use  # Create and use a Buildx builder instance with the default Docker driver
+          docker buildx ls  # List available builders to confirm setup
+
+      - name: Build Docker Image with Cache # Build Docker image using cache for optimization
+        id: build_image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false # Do not push image yet
+          tags: ${{ inputs.image_name }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Load Docker Image from Cache # Load built image from cache to Docker
+        run: |
+          docker buildx build --load --tag ${{ inputs.image_name }}:${{ env.IMAGE_TAG }} .
+
+      - name: Scan Docker Image with Trivy # Scan image for vulnerabilities
+        id: trivy_scan
+        run: |
+          trivy image --exit-code 1 --severity HIGH,CRITICAL --format json ${{ inputs.image_name }}:${{ env.IMAGE_TAG }} > trivy_report.json || true
+          cat trivy_report.json
+
+      - name: Upload Trivy Report # Upload vulnerability report if scan fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: artifacts/trivy_report.json
+
+      - name: Configure AWS Credentials # Set AWS credentials for deployment
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Login to Amazon ECR # Authenticate Docker to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Tag Docker Image for ECR # Tag image for ECR push
+        run: |
+          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG=${{ env.IMAGE_TAG }}
+          docker tag ${{ inputs.image_name }}:$IMAGE_TAG $ECR_REGISTRY/${{ inputs.ecr_repository }}:$IMAGE_TAG
+
+      - name: Push Docker Image to ECR # Push image to ECR repository
+        run: |
+          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG=${{ env.IMAGE_TAG }}
+          docker push $ECR_REGISTRY/${{ inputs.ecr_repository }}:$IMAGE_TAG
+
+      - name: Lint Helm Chart # Validate Helm chart syntax
+        run: |
+          cd ${{ inputs.helm_chart_dir }}
+          helm lint .
+
+      - name: Update Helm Chart with New Image Tag and Release # Update new tag in helm values, then commit changes to git repo
+        env:
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+        run: |
+          cd ${{ inputs.helm_chart_dir }}
+          chart_tag_key=${{inputs.chart_tag_key}}
+          sed -i "s/\(${chart_tag_key}:[[:space:]]*\).*/\1${IMAGE_TAG}/" values.yaml
+          CURRENT_VERSION=$(grep '^version:' Chart.yaml | awk '{print $2}')
+          NEW_VERSION="${CURRENT_VERSION}-${IMAGE_TAG}"
+          sed -i "s/\(version:[[:space:]]*\).*/\1${NEW_VERSION}/" Chart.yaml
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add values.yaml Chart.yaml
+          git commit -m "Update image tag to ${IMAGE_TAG} and bump chart version to ${NEW_VERSION}"
+          git push origin HEAD:${{ github.ref }}
