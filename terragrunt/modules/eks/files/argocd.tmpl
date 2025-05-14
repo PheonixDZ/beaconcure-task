@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ${name}
+  namespace: ${namespace}
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/codexops/terrascope-task
+    targetRevision: main
+    path: helm/image-processing
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: image-processing-app
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

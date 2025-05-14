@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "image-processing.fullname" . }}-pvc
+spec:
+  accessModes:
+    - ReadWriteMany   # For AWS EFS; use ReadWriteOnce if using EBS (adjust for multi-AZ if needed)
+  resources:
+    requests:
+      storage: {{ .Values.pvc.storage }}
+  storageClassName: {{ .Values.pvc.storageClassName }}  # e.g., "efs-sc" or "gp2"

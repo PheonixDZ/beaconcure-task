@@ -1,0 +1,96 @@
+# Default values for image-processing.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 3
+
+image:
+  repository: 1234567890.dkr.ecr.us-west-2.amazonaws.com/image-app-prod
+  pullPolicy: Always
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: latest
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+service:
+  type: NodePort
+  port: 80
+  targetPort: 3000
+containerport: 3000
+
+ingress:
+  enabled: true
+  className: "alb"
+  scheme: "internet-facing"
+  targetType: "instance"
+  loadBalancerName: "image-processing-alb"
+  listenPorts: '[{"HTTP": 80}, {"HTTPS": 443}]'
+  healthcheckPath: "/api/status"
+  host: "api.kubencloud.shop"
+  certificateArn: "arn:aws:acm:us-west-2:1234567890:certificate/c6a7b303-0e39-44c9-9346-cc0b842b43ed"
+  sslRedirect: true
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 70
+
+nodeSelector:
+  nodegroup: image-processing-node
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+  preferredDuringSchedulingIgnoredDuringExecution:
+  - weight: 100
+    podAffinityTerm:
+      labelSelector:
+        matchExpressions:
+        - key: app
+          operator: In
+          values:
+          - image-processing
+      topologyKey: topology.kubernetes.io/zone
+
+pvc:
+  storage: 1G
+  storageClassName: efs
+
+volumeMounts:
+  - name: app-storage
+    mountPath: /app/static
+
+efs:
+  fileSystemId: "fs-048482b20d90c62e8"
